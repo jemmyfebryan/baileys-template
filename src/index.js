@@ -25,6 +25,9 @@ const wsClients = new Set();
 const groupMetadataCache = new Map();
 const GROUP_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
 
+// Phone number cache - builds up over time from various sources
+const phoneNumberCache = new Map(); // LID/ID -> Phone Number
+
 // Auth state storage
 const authInfoPath = path.join(__dirname, 'auth_info');
 if (!fs.existsSync(authInfoPath)) {
@@ -89,6 +92,12 @@ async function getGroupMetadata(groupJid) {
 async function extractPhoneNumber(participantId, groupMetadata) {
     if (!participantId) return '';
 
+    // Check cache first
+    if (phoneNumberCache.has(participantId)) {
+        logger.debug(`Phone number found in cache for ${participantId}`);
+        return phoneNumberCache.get(participantId);
+    }
+
     // Try to find participant in group metadata
     if (groupMetadata && groupMetadata.participants) {
         const participant = groupMetadata.participants.find(p => p.id === participantId);
@@ -96,6 +105,7 @@ async function extractPhoneNumber(participantId, groupMetadata) {
             // Try to get phone from different sources
             // Some versions might have phone number in different fields
             if (participant.phone) {
+                phoneNumberCache.set(participantId, participant.phone);
                 return participant.phone;
             }
         }
@@ -110,6 +120,7 @@ async function extractPhoneNumber(participantId, groupMetadata) {
         // Check if it looks like a phone number (starts with country code)
         // Indonesian numbers start with 62, other countries have different codes
         if (/^[1-9]\d{8,14}$/.test(potentialPhone)) {
+            phoneNumberCache.set(participantId, potentialPhone);
             return potentialPhone;
         }
     }
@@ -117,16 +128,40 @@ async function extractPhoneNumber(participantId, groupMetadata) {
     // Try using Baileys' onWhatsApp to fetch user info
     try {
         const [user] = await sock.onWhatsApp(participantId);
-        if (user && user.number) {
-            // Extract number from the result
-            // The number field might contain the actual phone number
-            const num = user.number.toString();
-            logger.info(`Found phone number via onWhatsApp: ${num}`);
-            return num;
+        if (user) {
+            // The 'jid' field might contain the actual phone number
+            if (user.jid) {
+                const jidParts = user.jid.split('@');
+                if (jidParts.length > 0) {
+                    const potentialPhone = jidParts[0];
+                    if (/^[1-9]\d{8,14}$/.test(potentialPhone)) {
+                        logger.info(`Found phone number via onWhatsApp.jid: ${potentialPhone}`);
+                        phoneNumberCache.set(participantId, potentialPhone);
+                        return potentialPhone;
+                    }
+                }
+            }
+            // Try number field as fallback
+            if (user.number) {
+                const num = user.number.toString();
+                logger.info(`Found phone number via onWhatsApp.number: ${num}`);
+                phoneNumberCache.set(participantId, num);
+                return num;
+            }
         }
     } catch (error) {
         // Ignore error, just continue
         logger.debug(`onWhatsApp failed for ${participantId}: ${error.message}`);
+    }
+
+    // Additional method: Try fetching profile info (if available in your Baileys version)
+    try {
+        const profile = await sock.profilePictureUrl(participantId, 'preview').catch(() => null);
+        if (profile) {
+            logger.debug(`Profile picture exists for ${participantId}, trying additional methods`);
+        }
+    } catch (error) {
+        logger.debug(`Profile picture check failed: ${error.message}`);
     }
 
     // LID format (cannot extract phone number)
@@ -223,6 +258,10 @@ async function handleMessage(msg) {
             // remoteJid format: "6281234567890@s.whatsapp.net"
             senderPhone = remoteJid.split('@')[0];
             senderLid = `${remoteJid.split('@')[0]}@lid`;
+
+            // Cache this phone number for future group lookups
+            phoneNumberCache.set(remoteJid, senderPhone);
+            logger.info(`Cached phone number ${senderPhone} for ${remoteJid} from direct message`);
         }
 
         // Broadcast to Python clients
