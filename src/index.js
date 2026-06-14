@@ -21,6 +21,10 @@ let sock = null;
 let isConnected = false;
 const wsClients = new Set();
 
+// Group metadata cache to avoid frequent API calls
+const groupMetadataCache = new Map();
+const GROUP_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+
 // Auth state storage
 const authInfoPath = path.join(__dirname, 'auth_info');
 if (!fs.existsSync(authInfoPath)) {
@@ -52,6 +56,81 @@ function broadcastToClients(data) {
             client.send(message);
         }
     });
+}
+
+// Get group metadata with caching
+async function getGroupMetadata(groupJid) {
+    try {
+        // Check cache first
+        const cached = groupMetadataCache.get(groupJid);
+        if (cached && (Date.now() - cached.timestamp) < GROUP_CACHE_TTL) {
+            return cached.data;
+        }
+
+        // Fetch fresh metadata
+        logger.info(`Fetching group metadata for ${groupJid}`);
+        const metadata = await sock.groupMetadata(groupJid);
+
+        // Cache it
+        groupMetadataCache.set(groupJid, {
+            data: metadata,
+            timestamp: Date.now()
+        });
+
+        return metadata;
+    } catch (error) {
+        logger.error(`Error fetching group metadata: ${error.message}`);
+        return null;
+    }
+}
+
+// Extract phone number from participant ID
+// WhatsApp now uses LIDs, but we can try to extract phone number from various sources
+async function extractPhoneNumber(participantId, groupMetadata) {
+    if (!participantId) return '';
+
+    // Try to find participant in group metadata
+    if (groupMetadata && groupMetadata.participants) {
+        const participant = groupMetadata.participants.find(p => p.id === participantId);
+        if (participant) {
+            // Try to get phone from different sources
+            // Some versions might have phone number in different fields
+            if (participant.phone) {
+                return participant.phone;
+            }
+        }
+    }
+
+    // Try to extract from participant ID directly
+    // Format might be: "6281234567890@s.whatsapp.net" or "12816215965755@s.whatsapp.net"
+    const parts = participantId.split('@');
+    if (parts.length > 0) {
+        const potentialPhone = parts[0];
+
+        // Check if it looks like a phone number (starts with country code)
+        // Indonesian numbers start with 62, other countries have different codes
+        if (/^[1-9]\d{8,14}$/.test(potentialPhone)) {
+            return potentialPhone;
+        }
+    }
+
+    // Try using Baileys' onWhatsApp to fetch user info
+    try {
+        const [user] = await sock.onWhatsApp(participantId);
+        if (user && user.number) {
+            // Extract number from the result
+            // The number field might contain the actual phone number
+            const num = user.number.toString();
+            logger.info(`Found phone number via onWhatsApp: ${num}`);
+            return num;
+        }
+    } catch (error) {
+        // Ignore error, just continue
+        logger.debug(`onWhatsApp failed for ${participantId}: ${error.message}`);
+    }
+
+    // LID format (cannot extract phone number)
+    return '';
 }
 
 // WhatsApp connection handler
@@ -125,16 +204,20 @@ async function handleMessage(msg) {
         if (!text) return; // Skip non-text messages
 
         // CRITICAL: Extract sender phone number correctly
-        // For group messages, sender phone is in participant (not remoteJid)
-        // For individual messages, sender phone is in remoteJid
         let senderPhone;
         let senderLid;
 
         if (isGroup) {
-            // Group message: Extract from participant
-            // participant format: "6281234567890@s.whatsapp.net"
-            senderPhone = participant ? participant.split('@')[0] : '';
+            // Group message: Try to get real phone number from group metadata
+            const groupMetadata = await getGroupMetadata(remoteJid);
+            senderPhone = await extractPhoneNumber(participant, groupMetadata);
+
+            // If phone number not found, at least store the LID
             senderLid = participant || `${remoteJid.split('@')[0]}@lid`;
+
+            if (!senderPhone) {
+                logger.warn(`Could not extract phone number for participant ${participant} in group ${remoteJid}`);
+            }
         } else {
             // Individual message: Extract from remoteJid
             // remoteJid format: "6281234567890@s.whatsapp.net"
@@ -162,7 +245,7 @@ async function handleMessage(msg) {
             }
         });
 
-        logger.info(`Message from ${isGroup ? 'group' : 'chat'} ${remoteJid}: ${text}`);
+        logger.info(`Message from ${isGroup ? 'group' : 'chat'} ${remoteJid}: ${text} (phone: ${senderPhone || 'LID-only'})`);
     } catch (error) {
         logger.error('Error handling message:', error);
     }
