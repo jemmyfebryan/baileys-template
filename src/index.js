@@ -124,6 +124,24 @@ async function handleMessage(msg) {
 
         if (!text) return; // Skip non-text messages
 
+        // CRITICAL: Extract sender phone number correctly
+        // For group messages, sender phone is in participant (not remoteJid)
+        // For individual messages, sender phone is in remoteJid
+        let senderPhone;
+        let senderLid;
+
+        if (isGroup) {
+            // Group message: Extract from participant
+            // participant format: "6281234567890@s.whatsapp.net"
+            senderPhone = participant ? participant.split('@')[0] : '';
+            senderLid = participant || `${remoteJid.split('@')[0]}@lid`;
+        } else {
+            // Individual message: Extract from remoteJid
+            // remoteJid format: "6281234567890@s.whatsapp.net"
+            senderPhone = remoteJid.split('@')[0];
+            senderLid = `${remoteJid.split('@')[0]}@lid`;
+        }
+
         // Broadcast to Python clients
         broadcastToClients({
             event: 'message',
@@ -135,8 +153,8 @@ async function handleMessage(msg) {
                 author: participant || pushName,
                 id: msg.key.id,
                 sender: {
-                    lid: participant || remoteJid,
-                    phoneNumber: remoteJid.split('@')[0],
+                    lid: senderLid,
+                    phoneNumber: senderPhone,
                     name: pushName,
                     pushName: pushName
                 },
