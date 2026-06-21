@@ -1,0 +1,17 @@
+{
+  "defaultSession": "default",
+  "sessions": {
+    "default": {
+      "name": "Default Session",
+      "enabled": true
+    },
+    "client1": {
+      "name": "Client 1 Bot",
+      "enabled": false
+    },
+    "client2": {
+      "name": "Client 2 Bot",
+      "enabled": false
+    }
+  }
+}

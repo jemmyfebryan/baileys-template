@@ -4,6 +4,9 @@ node_modules/
 # Environment variables
 .env
 
+# Session configuration
+sessions.json
+
 # Baileys auth state
 src/auth_info/
 
