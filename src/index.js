@@ -623,7 +623,7 @@ app.get('/health', (req, res) => {
       status: 'ok',
       session: sessionId,
       ...sessionStatus,
-      clients: wsClients.size
+      clients: sessionManager.wsClients.size
     });
   } else {
     // Return status for all sessions
@@ -631,7 +631,7 @@ app.get('/health', (req, res) => {
       status: 'ok',
       defaultSession: sessionConfig.defaultSession,
       sessions: sessionManager.getAllSessionsStatus(),
-      clients: wsClients.size,
+      clients: sessionManager.wsClients.size,
       totalSessions: sessionManager.sessions.size
     });
   }
