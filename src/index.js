@@ -149,13 +149,13 @@ wss.on('connection', (ws, req) => {
   logger.info(`New Python client connected, subscribed to sessions: [${Array.from(subscribedSessions).join(', ')}]`);
 
   // Store client with their subscriptions
-  wsClients.set(ws, {
+  sessionManager.wsClients.set(ws, {
     subscribedSessions
   });
 
   ws.on('close', () => {
     logger.info('Python client disconnected');
-    wsClients.delete(ws);
+    sessionManager.wsClients.delete(ws);
   });
 
   ws.on('error', (error) => {
@@ -166,7 +166,7 @@ wss.on('connection', (ws, req) => {
 // Broadcast message to connected Python clients based on session subscriptions
 function broadcastToClients(sessionId, data) {
   const message = JSON.stringify(data);
-  wsClients.forEach((clientData, ws) => {
+  sessionManager.wsClients.forEach((clientData, ws) => {
     if (ws.readyState === 1) { // OPEN
       // Only send to clients subscribed to this session
       if (clientData.subscribedSessions.has(sessionId)) {
@@ -205,6 +205,28 @@ async function getGroupMetadata(sessionId, groupJid, sock) {
   }
 }
 
+// Get phone number from LID using reverse mapping file
+async function getPhoneFromLid(sessionId, participantId) {
+  if (!participantId) return null;
+
+  // Extract just the numeric LID (handle formats like "123456@s.whatsapp.net" or just "123456")
+  const lidNumber = participantId.split('@')[0];
+  const authPath = getAuthInfoPath(sessionId);
+  const mappingPath = path.join(authPath, `lid-mapping-${lidNumber}_reverse.json`);
+
+  try {
+    if (fs.existsSync(mappingPath)) {
+      const phone = fs.readFileSync(mappingPath, 'utf-8').replace(/"/g, '').trim();
+      logger.debug(`[Session ${sessionId}] Found phone ${phone} for LID ${lidNumber}`);
+      return phone;
+    }
+  } catch (error) {
+    logger.debug(`[Session ${sessionId}] Failed to read LID mapping for ${lidNumber}: ${error.message}`);
+  }
+
+  return null;
+}
+
 // Extract phone number from participant ID (session-specific)
 // WhatsApp now uses LIDs, but we can try to extract phone number from various sources
 async function extractPhoneNumber(sessionId, participantId, groupMetadata, sock) {
@@ -217,6 +239,13 @@ async function extractPhoneNumber(sessionId, participantId, groupMetadata, sock)
   if (sessionCache.has(participantId)) {
     logger.debug(`[Session ${sessionId}] Phone number found in cache for ${participantId}`);
     return sessionCache.get(participantId);
+  }
+
+  // Try LID reverse mapping from file
+  const phoneFromLid = await getPhoneFromLid(sessionId, participantId);
+  if (phoneFromLid) {
+    sessionCache.set(participantId, phoneFromLid);
+    return phoneFromLid;
   }
 
   // Try to find participant in group metadata
@@ -427,7 +456,19 @@ async function handleMessage(sessionId, msg) {
 
     logger.info(`[Session ${sessionId}] Message from ${isGroup ? 'group' : 'chat'} ${remoteJid}: ${text} (phone: ${senderPhone || 'LID-only'})`);
   } catch (error) {
-    logger.error(`[Session ${sessionId}] Error handling message:`, error);
+    // Safely log error with context, handling cases where variables might not be defined
+    const context = {
+      msg: `[Session ${sessionId}] Error handling message`,
+      error: error?.message || String(error),
+      stack: error?.stack
+    };
+    // Only add variables if they're defined (avoid ReferenceError)
+    if (typeof remoteJid !== 'undefined') context.remoteJid = remoteJid;
+    if (typeof participant !== 'undefined') context.participant = participant;
+    if (typeof pushName !== 'undefined') context.pushName = pushName;
+    if (typeof isGroup !== 'undefined') context.isGroup = isGroup;
+    if (typeof text !== 'undefined') context.text = text?.substring(0, 50);
+    logger.error(context);
   }
 }
 

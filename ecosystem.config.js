@@ -9,14 +9,14 @@ module.exports = {
     max_memory_restart: '500M',
     env: {
       NODE_ENV: 'production',
-      PORT: 3100,
-      WS_PORT: 3101,
+      PORT: 8002,
+      WS_PORT: 8003,
       LOG_LEVEL: 'info'
     },
     env_development: {
       NODE_ENV: 'development',
-      PORT: 3100,
-      WS_PORT: 3101,
+      PORT: 8002,
+      WS_PORT: 8003,
       LOG_LEVEL: 'debug'
     },
     error_file: './logs/error.log',
